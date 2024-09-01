@@ -1,0 +1,4 @@
+drugbank_ZINC000003874467 N[C@@H](N)Nc1ccc(C(=O)Oc2cc3ccc(C(N)N)cc3cc2)cc1
+drugbank_ZINC000003871842 CN(C)C(=O)COC(=O)Cc1ccc(OC(=O)c2ccc(NC(N)N)cc2)cc1
+drugbank_ZINC000002002226 CCOC(=O)c1ccc(OC(=O)CCCCCNC(N)N)cc1
+drugbank_ZINC000001908051 COC(=O)[C@H](Cc1cccc(C(N)N)c1)[C@@H](C)NC(=O)c1ccc(C2CCN(O)CC2)cc1
