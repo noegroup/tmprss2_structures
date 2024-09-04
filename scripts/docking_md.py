@@ -7,26 +7,42 @@
 # it under the terms of the MIT license. See LICENSE for details.
 
 
-import mdtraj
-import numpy as np
-import os, copy
+import argparse
 import bz2
+import copy
+import datetime, time
 import pickle
+import os
 
-from simtk.openmm import app
-import simtk.openmm as mm
-import simtk.unit as u
-import openmmforcefields.generators
-import openforcefield.topology
-
+import mdtraj
 import networkx as nx
 import networkx.algorithms.isomorphism as iso
-
+import numpy as np
+import openmmforcefields.generators
+import openforcefield.topology
+import simtk.openmm as mm
+import simtk.unit as u
 from mdtraj.reporters import DCDReporter
-import time, datetime
+from simtk.openmm import app
 
 from periodic import *
-import argparse
+
+
+# parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-d', '--dir', type=str,
+                    help='docking directory')
+parser.add_argument('-l', '--ligand', type=str,
+                    help='ligand name')
+parser.add_argument('-r', '--receptor', type=str,
+                    help='receptor name')
+parser.add_argument('-s', '--smiles_file', type=str,
+                    help='smiles file')
+parser.add_argument('-p', '--platform', choices=['CPU', 'CUDA'],
+                    help='platform for running simulations on, either CPU or CUDA')
+args = parser.parse_args()
+
+cache_dir = f'{args.dir}/openff_cache/'
 
 # adjustables
 boxsize = 7.2 * u.nanometer  # x, y, z extend (cubic box)
@@ -41,33 +57,18 @@ temperature_K = 310  # kelvin
 save_traj_ps = 100
 save_rmsd_ps = 10
 
-_dir = f'/data/scratch/kelez/virtual_screening/'
-cache_dir = f'{_dir}/openff_cache/'
-smiles_file = f'{_dir}/smiles_final_enamine_fixed.csv'
-
 # time stamp for output files
 stamp = datetime.datetime.now().strftime('%Y%b%d-%H%M')
 
-# parse arguments
-parser = argparse.ArgumentParser()
-parser.add_argument('-l', '--ligand', type=str)
-parser.add_argument('-r', '--receptor', type=str)
-parser.add_argument('-d', '--run', type=str)
-
-args = parser.parse_args()
-ligand = args.ligand
-receptor_name = args.receptor
-d_run = args.run
-
 print('\nMD docking refinement with')
-print(f'ligand: {ligand}\nreceptor: {receptor_name} \nrun {d_run}')
+print(f'ligand: {args.ligand}\nreceptor: {args.receptor} \ndirectory {args.dir}')
 
 # load smiles from here:
-smiles = np.loadtxt(smiles_file, dtype=str, comments=None)  # ensure `#` is not interpreted as comment
+smiles = np.loadtxt(args.smiles_file, dtype=str, comments=None)  # ensure `#` is not interpreted as comment
 
 # write smiles to disc
 with open(f'/tmp/sm-{os.getpid()}.smi', 'w') as f:
-    f.write([s[1] for s in smiles if s[0] == ligand][0] + ' ' + ligand)
+    f.write([s[1] for s in smiles if s[0] == args.ligand][0] + ' ' + args.ligand)
 
 # load topology from smiles
 molecule = openforcefield.topology.Molecule(f'/tmp/sm-{os.getpid()}.smi')
@@ -77,7 +78,7 @@ molecule.generate_unique_atom_names()  # necessary, otherwise empty strings
 molecule.generate_conformers(n_conformers=1)
 
 # load docked pose
-pose = mdtraj.load_pdb(_dir + f'dockings_{d_run}/{ligand}/{receptor_name}_bestpose.pdb',
+pose = mdtraj.load_pdb(f'{args.dir}/{args.ligand}/{args.receptor}_bestpose.pdb',
                        frame=0)
 
 positions = pose.xyz[0] * u.nanometer
@@ -193,8 +194,9 @@ def get_rmsd(pos=None):
 print('starting drug rmsd:', get_rmsd(pos=molecule.conformers[0]))
 
 # Create OpenM Context
-platform = mm.Platform.getPlatformByName('CUDA')
-platform.setPropertyDefaultValue('Precision', 'single')
+platform = mm.Platform.getPlatformByName(args.platform)
+if args.platform == 'CUDA':
+    platform.setPropertyDefaultValue('Precision', 'single')
 integrator = mm.LangevinIntegrator(temperature_K * u.kelvin,
                                    1.0 / u.picoseconds, .5 * u.femtosecond)
 
@@ -241,7 +243,7 @@ print('optimized rmsd:', get_rmsd())
 #### PHASE 2
 # add receptor and general MD of docked pose
 # load repaired receptor structure with flexible residues
-receptor = app.PDBFile(_dir + f'dockings_{d_run}/{ligand}/{receptor_name}_receptor.pdb')
+receptor = app.PDBFile(f'{args.dir}/{args.ligand}/{args.receptor}_receptor.pdb')
 
 # for openMM: define residue variants (only cystein bridges necessary)
 cbridge_resids = np.array([155, 171, 182, 210, 26, 42]) - 1
@@ -298,7 +300,7 @@ def rmsd_to_reference(pos, ref, atomsel):
     return rmsd
 
 
-outpath = _dir + f'dockings_{d_run}/{ligand}/'
+outpath = f'{args.dir}/{args.ligand}/'
 
 # pre-equilibration: normal hydrogen mass. local energy minimizer + NVT (2fs) + NPT (2fs)
 # with position restraint force on heavy atoms to mirror docking pose
@@ -325,7 +327,7 @@ for i in range(m.topology.getNumAtoms()):
 cforce_id = system.addForce(force)
 app.PDBFile.writeFile(m.topology, m.positions,
                       file=open(
-                          os.path.join(outpath, f'{receptor_name}_init.pdb'), 'w'))
+                          os.path.join(outpath, f'{args.receptor}_init.pdb'), 'w'))
 
 simulation = app.Simulation(m.topology, system, integrator, platform)
 simulation.context.setPositions(m.positions)
@@ -356,11 +358,11 @@ del system, integrator, simulation
 m.topology.setPeriodicBoxVectors(pbox_after_nptequil)
 app.PDBFile.writeFile(m.topology, newpositions,
                       file=open(
-                          os.path.join(outpath, f'{receptor_name}_docked2_equil_solv.pdb'), 'w'))
+                          os.path.join(outpath, f'{args.receptor}_docked2_equil_solv.pdb'), 'w'))
 
-_tmp = mdtraj.load(os.path.join(outpath, f'{receptor_name}_docked2_equil_solv.pdb')).atom_slice(lig_rec_atomids)
+_tmp = mdtraj.load(os.path.join(outpath, f'{args.receptor}_docked2_equil_solv.pdb')).atom_slice(lig_rec_atomids)
 make_protein_complex_whole(_tmp)
-_tmp.save_pdb(os.path.join(outpath, f'{receptor_name}_docked2_equil.pdb'))
+_tmp.save_pdb(os.path.join(outpath, f'{args.receptor}_docked2_equil.pdb'))
 del _tmp
 
 # production run with heavy hydrogens
@@ -376,7 +378,7 @@ system.addForce(barostat)
 # not sure if there are complex problems inferring with creating the system. 
 # it should be the same for every pose.
 # this could be done more efficiently
-with bz2.BZ2File(f'{cache_dir}/{molecule.name}/{receptor_name}_system.xml.bz2', 'w') as f:
+with bz2.BZ2File(f'{cache_dir}/{molecule.name}/{args.receptor}_system.xml.bz2', 'w') as f:
     xml = mm.XmlSerializer.serialize(system)
     f.write(xml.encode('ascii'))
 
@@ -397,13 +399,13 @@ simulation.context.applyConstraints(1e-12)  # HBond constraints
 simulation.minimizeEnergy()
 
 # output reporters
-ener_outfile = os.path.join(outpath, f'{receptor_name}-{stamp}-energy.csv')
+ener_outfile = os.path.join(outpath, f'{args.receptor}-{stamp}-energy.csv')
 simulation.reporters.append(app.StateDataReporter(ener_outfile,
                                                   int(float(save_traj_ps) / integrator_timestep_ps),
                                                   time=True, potentialEnergy=True, kineticEnergy=True,
                                                   totalEnergy=True, temperature=True))
 
-prot_outfile = os.path.join(outpath, f'{receptor_name}-{stamp}-protein.dcd')
+prot_outfile = os.path.join(outpath, f'{args.receptor}-{stamp}-protein.dcd')
 simulation.reporters.append(DCDReporter(prot_outfile,
                                         int(float(save_traj_ps) / integrator_timestep_ps),
                                         atomSubset=lig_rec_atomids))
@@ -434,14 +436,14 @@ state = simulation.context.getState(getPositions=True)
 pbox = state.getPeriodicBoxVectors()
 m.topology.setPeriodicBoxVectors(pbox)
 
-outname_solv = os.path.join(outpath, f'{receptor_name}-{stamp}_{simulation_time_ns}ns_solv.pdb')
+outname_solv = os.path.join(outpath, f'{args.receptor}-{stamp}_{simulation_time_ns}ns_solv.pdb')
 app.PDBFile.writeFile(m.topology, state.getPositions(),
                       file=open(outname_solv, 'w'))
 
 # save protein ligand coordinates only; map to closest ligand image
 out_struct = mdtraj.load(outname_solv).atom_slice(lig_rec_atomids)
 make_protein_complex_whole(out_struct)
-out_struct.save_pdb(os.path.join(outpath, f'{receptor_name}_{stamp}_{simulation_time_ns}ns.pdb'))
+out_struct.save_pdb(os.path.join(outpath, f'{args.receptor}_{stamp}_{simulation_time_ns}ns.pdb'))
 
 # compress solvated frame
 with open(outname_solv, 'r') as infile, bz2.BZ2File(outname_solv + '.bz2', 'w') as outfile:

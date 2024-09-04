@@ -29,10 +29,18 @@ Dependencies:
 `conda install -c bioconda smina=2017.11.9`\
 `conda install -c openbabel openbabel=2.4.1`\
 `conda install -c conda-forge mdtraj=1.9.4`\
-`conda install -c omnia openmm=7.4.2
+`conda install -c omnia openmm=7.4.2`
 
+### Create MD environment
+`conda create --name vs_md`\
+`conda activate vs_md`\
+`conda install -c conda-forge python=3.7`\
+`conda install -c conda-forge mdtraj=1.9.4`\
+`conda install -c omnia openmm=7.4.2`
+`conda install -c conda-forge -c omnia openmmforcefields=0.8.0`\
+`conda install -c omnia openforcefield=0.7.1`
 
-## Instructions
+## Details
 
 ### script 1: `run_ligprep.sh`
 - input: ligand name and smiles
@@ -85,7 +93,7 @@ Dependencies:
 
 ## Demo
 
-1. Generating ligand structures\
+1. Generating ligand structures (already provided for test dataset)\
 `./run_ligprep.sh data/ligands data/smiles.smi`
 
 2. Preparing receptor and ligand structures\
@@ -106,10 +114,9 @@ Dependencies:
 `./smina_atomassign.py --dir data/dockings --ligand drugbank_ZINC000003874467 --receptors_dir data/receptors --receptors_list data/receptors.list`
 
 5. Running molecular dynamics simulations\
-
+`./docking_md.py --dir data/dockings --ligand drugbank_ZINC000003874467 --receptor apo_hmm0_rndm_frm130 --smiles_file data/smiles.smi --platform CPU`
 
 6. Calculating target-specific scores
-
 
 
 ## License
