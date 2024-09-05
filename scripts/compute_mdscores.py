@@ -9,22 +9,25 @@
 # parse arguments
 import argparse
 
+import numpy as np
+import pandas as pd
+import pickle
+
 parser = argparse.ArgumentParser()
-parser.add_argument('-i', '--input_list', type=str,
-                    help='text file that contains lines with \"d_run ligand receptor\"')
+parser.add_argument('-d', '--dir', type=str,
+                    help='docking directory')
+parser.add_argument('-x', '--pairs_list', type=str,
+                    help='text file that contains lines with \"ligand receptor\"')
 parser.add_argument('-p', '--pre_computed', type=str,
                     help='pickle file with pre-computed sasa, reactive distances etc; all_results_merged.pickle')
 args = parser.parse_args()
 
+
 print(' - COMPUTE REACTIVE MD-SCORES -')
 
-import numpy as np
-import pickle
-import pandas as pd
+lig_rec_pairs = np.loadtxt(args.pairs_list, dtype=str, comments=None)
 
-lig_rec_pairs = np.loadtxt(args.input_list, dtype=str, comments=None)
-
-lig_rec_pairs_pd = pd.DataFrame(lig_rec_pairs, columns=['d_run', 'lig', 'rec'])
+lig_rec_pairs_pd = pd.DataFrame(lig_rec_pairs, columns=['lig', 'rec'])
 
 
 residue_groups = {'S1':np.concatenate([np.arange(180, 187), np.arange(204, 210)])-1,
@@ -32,9 +35,8 @@ residue_groups = {'S1':np.concatenate([np.arange(180, 187), np.arange(204, 210)]
                   'flex':np.arange(41, 46)-1}
 sasa_residues = np.concatenate(list(residue_groups.values()))
 
-# results have been computed on allegro in 'virtual_screening/md_refinement/analysis_XXX/run.py'
 # load subset corresponding to ligands in selection
-_l, _n = np.unique(lig_rec_pairs[:, 1], return_index=True)
+_l, _n = np.unique(lig_rec_pairs[:, 0], return_index=True)
 ligands_sorted = _l[_n.argsort()]
 
 
@@ -59,7 +61,7 @@ for lig, ligdict in result_part.items():
         if recdict is None:
             continue
 
-        if rec not in lig_rec_pairs[lig_rec_pairs[:, 1] == lig][:, 2]:
+        if rec not in lig_rec_pairs[lig_rec_pairs[:, 0] == lig][:, 1]:
             continue
 
 
@@ -115,17 +117,15 @@ for lig in something_missing:
         if recdict == {} or recdict is None or \
                 recdict[list(recdict.keys())[0]] is None or \
                 'n_heavy' not in recdict[list(recdict.keys())[0]].keys():
-            something_missing_writeout.append([lig_rec_pairs_pd[lig_rec_pairs_pd.lig == lig]['d_run'].iloc[0],
-                                               lig,
-                                               rec])
+            something_missing_writeout.append([lig, rec])
 
 if len(failed_cmpnds) > 0:
-    with open(args.input_list, 'r') as infile, open('missing_cmpnds.txt', 'w') as outfile:
+    with open(args.pairs_list, 'r') as infile, open(f'{args.dir}/missing_cmpnds.txt', 'w') as outfile:
         for line in infile.readlines():
             if line.split()[1] in failed_cmpnds:
                 outfile.write(line)
 
-with open('missing_cmpnds.txt', 'a') as outfile:
+with open(f'{args.dir}/missing_cmpnds.txt', 'a') as outfile:
     for line in something_missing_writeout:
         outfile.write(' '.join(line) + '\n')
 
@@ -212,12 +212,11 @@ def get_sorted_dataframes(scores, return_topn=None):
             continue
         n_rec = 0
         for rec in all_results[lig].keys():
-            d_run = lig_rec_pairs_pd[lig_rec_pairs_pd.lig == lig]['d_run'].to_numpy()[0]
             try:
                 scores[lig][n_rec].mean()
             except:
                 print(lig, n_rec)
-            score_means.append([f'{d_run}/{lig}', 
+            score_means.append([f'{args.dir}/{lig}', 
                                 rec, 
                                 scores[lig][n_rec].mean(),
                                regionalsasa['S1'][lig][n_rec].mean(),
@@ -299,8 +298,8 @@ print('sorting to mean score')
 top3_nodock, scored_md_nodock, top5_nodock = get_sorted_dataframes(scores_nodock, return_topn=5)
 
 print('saving files scoredMD.csv, top3.csv, top5.csv')
-scored_md_nodock.to_csv('scoredMD.csv')
-top3_nodock.to_csv('top3.csv')
-top5_nodock.to_csv('top5.csv')
+scored_md_nodock.to_csv(f'{args.dir}/scoredMD.csv')
+top3_nodock.to_csv(f'{args.dir}/top3.csv')
+top5_nodock.to_csv(f'{args.dir}/top5.csv')
 
 print('Finished; exiting')

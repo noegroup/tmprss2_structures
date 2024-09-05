@@ -6,34 +6,38 @@
 # it under the terms of the MIT license. See LICENSE for details.
 
 
-import numpy as np
-import matplotlib.pyplot as plt
-import mdtraj
-import scipy.stats
-from glob import glob
-import pickle
-from pathos.multiprocessing import Pool
-from contextlib import closing
+import argparse
 import itertools
-from tqdm import tqdm
+import pickle
+import sys
+from contextlib import closing
+from glob import glob
 
+import mdtraj
+import numpy as np
+import pandas as pd
+from pathos.multiprocessing import Pool
 from rdkit import Chem
 from rdkit.Chem import AllChem
-import pandas as pd
+from tqdm import tqdm
 
-import sys
 
-JOBID = sys.argv[1]
-print('jobid', JOBID)
+# parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument('-d', '--dir', type=str,
+                    help='docking directory')
+parser.add_argument('-x', '--pairs_list', type=str,
+                    help='path to receptor-ligand list')
+parser.add_argument('-s', '--smiles_file', type=str,
+                    help='smiles file')
+parser.add_argument('-n', '--n_proc', type=int,
+                    help='number of parallel processes')
+args = parser.parse_args()
 
-n_proc = 24
-traj_length_str = '100ns'
-total_n = 2215  # number of computations to distribute
 
-# devide by number of compute nodes (20); TODO: replace manual parallelization
-_lig_rec_pairs = np.loadtxt(f'../enamine_MD_list_long.txt',
-                            dtype=str, comments=None)[
-                 int(total_n / 20) * int(JOBID):int(total_n / 20) * (int(JOBID) + 1)]
+traj_length_str = '10ns'
+
+_lig_rec_pairs = np.loadtxt(args.pairs_list, dtype=str, comments=None)
 
 residue_groups = {'S1': np.concatenate([np.arange(180, 187), np.arange(204, 210)]) - 1,
                   'hydroph': np.arange(24, 27) - 1,
@@ -41,8 +45,7 @@ residue_groups = {'S1': np.concatenate([np.arange(180, 187), np.arange(204, 210)
 
 sasa_residues = np.concatenate(list(residue_groups.values()))
 
-smiles_path = 'smiles_final_enamine_fixed.csv'
-smiles = pd.read_csv(smiles_path, sep=' ', header=None, index_col=0).to_dict()[1]
+smiles = pd.read_csv(args.smiles_file, sep=' ', header=None, index_col=0).to_dict()[1]
 
 covalent_warhead_smarts = {
     'ester': '[*]-C(=O)O-[*]',  # check C (atom in pos 1)
@@ -52,19 +55,17 @@ covalent_warhead_smarts = {
     'TFK': '[*]-C(=O)C(F)(F)F'  # check first C (atom in pos 1)
 }
 
-_dir = '../../'
 
-
-def compute_observables(d_run, lig, rec):
+def compute_observables(lig, rec):
     results_list_dict = {}
-    _files = glob(f'{_dir}/dockings_{d_run}/{lig}/{rec}_*_{traj_length_str}.pdb')
+    _files = glob(f'{args.dir}/{lig}/{rec}_*_{traj_length_str}.pdb')
     trajfiles = [f.replace(f'_{traj_length_str}.pdb', '-protein.xtc').replace(f'{rec}_', f'{rec}-') for f in _files]
     for trajfile in trajfiles:
         name = trajfile.split('/')[-1]
         results = {}
         try:
             traj = mdtraj.load(trajfile,
-                               top=f'{_dir}/dockings_{d_run}/{lig}/{rec}_docked2_equil.pdb',
+                               top=f'{args.dir}/{lig}/{rec}_docked2_equil.pdb',
                                stride=10)
 
             # unfortunate combination of 2 problems: a) MD SASA crashes if two atoms overlap;
@@ -75,7 +76,7 @@ def compute_observables(d_run, lig, rec):
                 d[np.diag_indices(d.shape[0])] = 999
 
                 if d.min() < 0.025:
-                    print('atom overlap for ', d_run, lig, rec)
+                    print('atom overlap for ', lig, rec)
                     return
 
             results['n_heavy'] = traj.top.select('not protein and mass > 2').shape[0]
@@ -98,7 +99,7 @@ def compute_observables(d_run, lig, rec):
             results['dsasa'] = (sasa_complex[:, :-1] - sasa_protein)[:, sasa_residues]
 
             try:
-                mol = Chem.MolFromPDBFile(f'{_dir}/dockings_{d_run}/{lig}/{rec}_docked2_equil.pdb')
+                mol = Chem.MolFromPDBFile(f'{args.dir}/{lig}/{rec}_docked2_equil.pdb')
                 mol = AllChem.AssignBondOrdersFromTemplate(Chem.MolFromSmiles(smiles[lig]), mol)
                 coord_OG = np.asarray(mol.GetConformer().GetAtomPosition(1439))  # OG atom coord of SER186
                 min_dist_RC = np.inf  # if there are multiple RCs takes the one closest to OG of SER186
@@ -145,19 +146,19 @@ contacts = {k: {} for k in residue_groups.keys()}
 dsasas = {}
 n_heavy = {}
 
-args = [(l[0], l[1], l[2]) for l in _lig_rec_pairs]
+args = [(l[0], l[1]) for l in _lig_rec_pairs]
 
 pbar = tqdm(total=len(args))
-pool = Pool(processes=n_proc)
+pool = Pool(processes=args.n_proc)
 
-all_results = {lig: {} for lig in np.unique(_lig_rec_pairs[:, 1])}
+all_results = {lig: {} for lig in np.unique(_lig_rec_pairs[:, 0])}
 
 with closing(pool):
     for a in args:
         x = pool.apply_async(compute_observables, a,
                              callback=lambda _: pbar.update(1))
-        all_results[a[1]][a[2]] = x.get()
+        all_results[a[0]][a[1]] = x.get()
 
 pbar.close()
 
-pickle.dump(all_results, open('all_results_' + str(JOBID) + '.pickle', 'wb'))
+pickle.dump(all_results, open(f'{args.dir}/all_results.pickle', 'wb'))
